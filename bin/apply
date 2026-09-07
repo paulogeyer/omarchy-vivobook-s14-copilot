@@ -3,6 +3,9 @@
 # Called from this plugin's service and from a cloned Omarchy power menu.
 set -euo pipefail
 
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+PLUGIN_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+
 MONITOR="${OMARCHY_VIVOBOOK_MONITOR:-eDP-1}"
 RES="2880x1800"
 SCALE="${OMARCHY_VIVOBOOK_SCALE:-2}"
@@ -26,15 +29,19 @@ SOURCE=""
 usage() {
   cat <<'EOF'
 Usage: apply [--remember|--no-remember] [--tune-only] [--source ac|battery]
-             <performance|balanced|power-saver|autodetect>
+             <performance|balanced|power-saver|autodetect|unplug>
        apply status
        apply --shell-status
 
-Maps Omarchy power-profile buttons onto Vivobook S14 Copilot+ extras:
+Maps Omarchy power-profile buttons onto Vivobook S14 Copilot+ extras.
+Per-profile knobs live in ~/.config/omarchy/vivobook-s14-copilot.json
+and can be edited from the plugin's Customize panel.
 
-  performance  PPD performance, 120 Hz, animations on, charge 100%, kbd restored
-  balanced     PPD balanced,    120 Hz, animations on, charge 80%,  kbd restored
-  power-saver  PPD power-saver, 60 Hz,  animations off, charge 80%, kbd off
+Defaults:
+  performance  120 Hz, animations on, charge 100%, kbd restored
+  balanced     120 Hz, animations on, charge 80%,  kbd restored
+  power-saver  60 Hz,  animations off, charge 80%, kbd off
+  unplug       force power-saver extras unless autoBattery is off
 
 --remember (default) also stores the PPD choice for AC vs battery via
 omarchy-powerprofiles-set. --tune-only only applies extras (the profile
@@ -281,21 +288,74 @@ cmd_shell_status() {
   printf 'thermal\t%s\n' "$(cat "$THERMAL" 2>/dev/null || echo "?")"
 }
 
+load_profile_opts() {
+  REFRESH=""
+  ANIMATIONS=""
+  CHARGE=""
+  KEYBOARD=""
+  THERMAL_POLICY=""
+  VAAPI="on"
+  AUTO_BATTERY="on"
+  local line key val
+  while IFS= read -r line; do
+    [[ $line == *=* ]] || continue
+    key=${line%%=*}
+    val=${line#*=}
+    case "$key" in
+      refresh) REFRESH=$val ;;
+      animations) ANIMATIONS=$val ;;
+      charge) CHARGE=$val ;;
+      keyboard) KEYBOARD=$val ;;
+      thermal) THERMAL_POLICY=$val ;;
+      vaapi) VAAPI=$val ;;
+      auto_battery) AUTO_BATTERY=$val ;;
+    esac
+  done < <(python3 "$PLUGIN_DIR/bin/config" env "$1")
+}
+
 apply_extras() {
   local profile="$1"
-  local hz=120 anim=on pct=80 kbd=on thermal=0
-  case "$profile" in
-    performance) hz=120; anim=on;  pct=100; kbd=on;  thermal=1 ;;
-    balanced)    hz=120; anim=on;  pct=80;  kbd=on;  thermal=0 ;;
-    power-saver) hz=60;  anim=off; pct=80;  kbd=off; thermal=2 ;;
-  esac
-  set_refresh "$hz" || true
-  set_animations "$anim" || true
-  set_kbd "$kbd" || true
-  set_thermal "$thermal" || true
-  set_charge "$pct" || true
-  ensure_vaapi || true
+  load_profile_opts "$profile"
+  if [[ ${REFRESH:-} != skip && -n ${REFRESH:-} ]]; then
+    set_refresh "$REFRESH" || true
+  fi
+  if [[ ${ANIMATIONS:-} != skip && -n ${ANIMATIONS:-} ]]; then
+    set_animations "$ANIMATIONS" || true
+  fi
+  if [[ ${KEYBOARD:-} != skip && -n ${KEYBOARD:-} ]]; then
+    set_kbd "$KEYBOARD" || true
+  fi
+  if [[ ${THERMAL_POLICY:-} != skip && -n ${THERMAL_POLICY:-} ]]; then
+    set_thermal "$THERMAL_POLICY" || true
+  fi
+  if [[ ${CHARGE:-} != skip && -n ${CHARGE:-} ]]; then
+    set_charge "$CHARGE" || true
+  fi
+  if [[ ${VAAPI:-} == on ]]; then
+    ensure_vaapi || true
+  fi
   save_state "$profile"
+}
+
+auto_battery_enabled() {
+  if [[ ${OMARCHY_VIVOBOOK_AUTO_BATTERY:-} == 0 ]]; then
+    return 1
+  fi
+  load_profile_opts power-saver
+  [[ ${AUTO_BATTERY:-on} == on ]]
+}
+
+cmd_unplug() {
+  if auto_battery_enabled; then
+    TUNE_ONLY=0
+    REMEMBER=1
+    SOURCE=battery
+    apply_profile power-saver
+  else
+    TUNE_ONLY=1
+    REMEMBER=0
+    apply_profile "$(map_profile "$(current_ppd)" || echo balanced)"
+  fi
 }
 
 apply_profile() {
@@ -342,6 +402,9 @@ main() {
     --shell-status|shell-status) cmd_shell_status ;;
     autodetect)
       apply_profile "$(map_profile "$(current_ppd)" || echo balanced)"
+      ;;
+    unplug)
+      cmd_unplug
       ;;
     performance|balanced|power-saver|battery)
       apply_profile "$(map_profile "$cmd")"

@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Read and merge Vivobook S14 Copilot+ profile extras."""
+import json
+import os
+import sys
+from copy import deepcopy
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+PLUGIN_DIR = HERE.parent
+DEFAULTS_PATH = PLUGIN_DIR / "defaults.json"
+CONFIG_PATH = (
+    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    / "omarchy"
+    / "vivobook-s14-copilot.json"
+)
+
+PROFILES = ("performance", "balanced", "power-saver")
+PROFILE_KEYS = ("refresh", "animations", "charge", "keyboard", "thermal")
+
+
+def load_json(path: Path):
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def defaults():
+    data = load_json(DEFAULTS_PATH)
+    if data:
+        return data
+    return {
+        "autoBattery": True,
+        "vaapi": True,
+        "profiles": {
+            "performance": {
+                "refresh": "120",
+                "animations": "on",
+                "charge": "100",
+                "keyboard": "restore",
+                "thermal": "1",
+            },
+            "balanced": {
+                "refresh": "120",
+                "animations": "on",
+                "charge": "80",
+                "keyboard": "restore",
+                "thermal": "0",
+            },
+            "power-saver": {
+                "refresh": "60",
+                "animations": "off",
+                "charge": "80",
+                "keyboard": "off",
+                "thermal": "2",
+            },
+        },
+    }
+
+
+def merge(base, overlay):
+    out = deepcopy(base)
+    if not isinstance(overlay, dict):
+        return out
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def normalize(cfg):
+    cfg = merge(defaults(), cfg if isinstance(cfg, dict) else {})
+    cfg["autoBattery"] = bool(cfg.get("autoBattery"))
+    cfg["vaapi"] = bool(cfg.get("vaapi"))
+    profiles = cfg.setdefault("profiles", {})
+    base_profiles = defaults()["profiles"]
+    for name in PROFILES:
+        src = base_profiles[name]
+        got = profiles.get(name) if isinstance(profiles.get(name), dict) else {}
+        merged = dict(src)
+        for key in PROFILE_KEYS:
+            if key in got and got[key] is not None:
+                merged[key] = str(got[key])
+        profiles[name] = merged
+    return cfg
+
+
+def load():
+    return normalize(load_json(CONFIG_PATH))
+
+
+def dump(cfg):
+    return json.dumps(cfg, indent=2) + "\n"
+
+
+def save(cfg):
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(dump(normalize(cfg)))
+
+
+def env_for(profile: str) -> None:
+    cfg = load()
+    if profile == "battery":
+        profile = "power-saver"
+    if profile not in PROFILES:
+        print(f"unknown profile: {profile}", file=sys.stderr)
+        sys.exit(2)
+    p = cfg["profiles"][profile]
+    print(f"refresh={p['refresh']}")
+    print(f"animations={p['animations']}")
+    print(f"charge={p['charge']}")
+    print(f"keyboard={p['keyboard']}")
+    print(f"thermal={p['thermal']}")
+    print(f"vaapi={'on' if cfg['vaapi'] else 'off'}")
+    print(f"auto_battery={'on' if cfg['autoBattery'] else 'off'}")
+
+
+def usage() -> None:
+    print(
+        "Usage: config get | config env <profile> | config path | config reset",
+        file=sys.stderr,
+    )
+
+
+def main(argv: list[str]) -> int:
+    cmd = argv[1] if len(argv) > 1 else "get"
+    if cmd in ("-h", "--help", "help"):
+        usage()
+        return 0
+    if cmd == "get":
+        sys.stdout.write(dump(load()))
+        return 0
+    if cmd == "path":
+        print(CONFIG_PATH)
+        return 0
+    if cmd == "defaults":
+        sys.stdout.write(dump(defaults()))
+        return 0
+    if cmd == "env":
+        if len(argv) < 3:
+            usage()
+            return 2
+        env_for(argv[2])
+        return 0
+    if cmd == "reset":
+        save(defaults())
+        sys.stdout.write(dump(load()))
+        return 0
+    usage()
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

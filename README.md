@@ -14,20 +14,26 @@ stock Omarchy power profiles.
 From git:
 
 ```sh
-omarchy plugin add <git-url> --enable
+omarchy plugin add https://github.com/paulogeyer/omarchy-vivobook-s14-copilot.git --enable
 ```
 
-From a local checkout (edits hot-reload):
+From a local checkout:
 
 ```sh
-ln -s "$HOME/Projects/omarchy-vivobook-s14-copilot" \
-  "$HOME/.config/omarchy/plugins/vivobook.s14-copilot"
-omarchy-shell shell rescanPlugins
-omarchy plugin enable vivobook.s14-copilot
+omarchy plugin add "$HOME/Projects/omarchy-vivobook-s14-copilot" --enable --yes
 ```
+
+The shell loads the copy under `~/.config/omarchy/plugins/vivobook.s14-copilot`
+(a git clone). A symlink there will not load.
 
 The stock power menu still sets the PPD profile. This service applies the
 matching extras whenever that profile or the power source changes.
+
+Open **Customize extras** from the power menu (or run
+`omarchy-shell vivobook.s14-copilot open '{}'`). That panel edits
+per-profile refresh rate, animations, charge limit, keyboard backlight, and
+thermal policy. Choices are saved to
+`~/.config/omarchy/vivobook-s14-copilot.json`.
 
 To have the bar buttons call the tuner directly, clone the stock widget and
 point `setProfile()` at `bin/apply`:
@@ -74,7 +80,8 @@ prompting on every unplug.
 ## Files
 
 - `bin/apply` — CLI used by the service and by a cloned power menu
-- `Service.qml` — watches UPower + PPD `ActiveProfile`
+- `bin/config` — merge defaults with the user JSON
+- `Service.qml` — watches UPower + PPD, and hosts the customize overlay
 
 ```bash
 ~/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply status

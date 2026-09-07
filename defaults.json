@@ -1,0 +1,27 @@
+{
+  "autoBattery": true,
+  "vaapi": true,
+  "profiles": {
+    "performance": {
+      "refresh": "120",
+      "animations": "on",
+      "charge": "100",
+      "keyboard": "restore",
+      "thermal": "1"
+    },
+    "balanced": {
+      "refresh": "120",
+      "animations": "on",
+      "charge": "80",
+      "keyboard": "restore",
+      "thermal": "0"
+    },
+    "power-saver": {
+      "refresh": "60",
+      "animations": "off",
+      "charge": "80",
+      "keyboard": "off",
+      "thermal": "2"
+    }
+  }
+}
