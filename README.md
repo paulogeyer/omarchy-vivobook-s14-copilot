@@ -5,7 +5,7 @@ Intel Core Ultra 7 258V, Arc 130V/140V, 2880×1800@120 panel).
 
 Plugin id: `vivobook.s14-copilot`
 
-![Customize extras overlay](preview.png)
+![Customize extras overlay](images/preview.png)
 
 It does not edit `/usr/share/omarchy`. It watches power-profiles-daemon and
 the AC adapter, then applies Vivobook S14 Copilot+ extras on top of the
@@ -86,7 +86,7 @@ prompting on every unplug.
 - `bin/apply` — CLI used by the service and by a cloned power menu
 - `bin/config` — merge defaults with the user JSON
 - `Service.qml` — watches UPower + PPD, and hosts the customize overlay
-- `preview.png` / `images/power-menu.png` — customize overlay and power menu
+- `images/` — customize overlay and power menu screenshots
 
 ```bash
 ~/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply status
