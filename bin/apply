@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# Session tuner for the ASUS Vivobook S14 Copilot+ (S5406SA, Core Ultra 7 258V).
+# Called from this plugin's service and from a cloned Omarchy power menu.
+set -euo pipefail
+
+MONITOR="${OMARCHY_VIVOBOOK_MONITOR:-eDP-1}"
+RES="2880x1800"
+SCALE="${OMARCHY_VIVOBOOK_SCALE:-2}"
+BAT_END="/sys/class/power_supply/BAT0/charge_control_end_threshold"
+THERMAL="/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
+KBD_LED="asus::kbd_backlight"
+CHROMIUM_FLAGS="${XDG_CONFIG_HOME:-$HOME/.config}/chromium-flags.conf"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/vivobook-s14-copilot"
+LEGACY_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-vivobook-profile"
+STATE_FILE="$STATE_DIR/current"
+KBD_FILE="$STATE_DIR/kbd-saved"
+LEGACY_STATE_FILE="$LEGACY_STATE_DIR/current"
+
+VAAPI_ENABLE_FEATURES="VaapiVideoDecoder,VaapiIgnoreDriverChecks"
+VAAPI_DISABLE_FEATURES="UseChromeOSDirectVideoDecoder"
+
+REMEMBER=1
+TUNE_ONLY=0
+SOURCE=""
+
+usage() {
+  cat <<'EOF'
+Usage: apply [--remember|--no-remember] [--tune-only] [--source ac|battery]
+             <performance|balanced|power-saver|autodetect>
+       apply status
+       apply --shell-status
+
+Maps Omarchy power-profile buttons onto Vivobook S14 Copilot+ extras:
+
+  performance  PPD performance, 120 Hz, animations on, charge 100%, kbd restored
+  balanced     PPD balanced,    120 Hz, animations on, charge 80%,  kbd restored
+  power-saver  PPD power-saver, 60 Hz,  animations off, charge 80%, kbd off
+
+--remember (default) also stores the PPD choice for AC vs battery via
+omarchy-powerprofiles-set. --tune-only only applies extras (the profile
+already changed). Does not wrap the packaged omarchy-powerprofiles-set binary.
+EOF
+}
+
+on_battery() {
+  local raw
+  raw=$(busctl get-property org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower OnBattery 2>/dev/null || true)
+  [[ $raw == "b true" ]]
+}
+
+resolve_source() {
+  if [[ -n $SOURCE ]]; then
+    printf '%s\n' "$SOURCE"
+    return
+  fi
+  if on_battery; then
+    echo battery
+  else
+    echo ac
+  fi
+}
+
+map_profile() {
+  case "$1" in
+    performance|balanced|power-saver) printf '%s\n' "$1" ;;
+    battery) echo power-saver ;;
+    *) return 1 ;;
+  esac
+}
+
+current_ppd() {
+  powerprofilesctl get 2>/dev/null || echo balanced
+}
+
+save_state() {
+  mkdir -p "$STATE_DIR" "$LEGACY_STATE_DIR"
+  printf '%s\n' "$1" >"$STATE_FILE"
+  case "$1" in
+    power-saver) printf '%s\n' battery >"$LEGACY_STATE_FILE" ;;
+    *) printf '%s\n' "$1" >"$LEGACY_STATE_FILE" ;;
+  esac
+}
+
+hypr_eval() {
+  command -v hyprctl >/dev/null 2>&1 || return 0
+  hyprctl eval "$1" >/dev/null
+}
+
+set_refresh() {
+  local hz="$1"
+  hypr_eval "hl.monitor({ output = \"${MONITOR}\", mode = \"${RES}@${hz}\", position = \"0x0\", scale = ${SCALE} })"
+  echo "display: ${MONITOR} ${RES}@${hz} scale ${SCALE}"
+}
+
+set_animations() {
+  local enabled=true
+  [[ $1 == off ]] && enabled=false
+  hypr_eval "hl.config({ animations = { enabled = ${enabled} } })"
+  echo "animations: $1"
+}
+
+try_write() {
+  local dest="$1" value="$2"
+  [[ -e $dest ]] || return 0
+  if [[ -r $dest && $(cat "$dest") == "$value" ]]; then
+    return 0
+  fi
+  if [[ -w $dest ]]; then
+    printf '%s\n' "$value" >"$dest"
+  fi
+}
+
+root_write() {
+  local dest="$1" content="$2"
+  if [[ -w $(dirname "$dest") ]] && { [[ ! -e $dest ]] || [[ -w $dest ]]; }; then
+    printf '%s\n' "$content" >"$dest"
+    return
+  fi
+  if [[ -t 0 ]] && command -v sudo >/dev/null; then
+    printf '%s\n' "$content" | sudo tee "$dest" >/dev/null
+    return
+  fi
+  if command -v pkexec >/dev/null; then
+    printf '%s\n' "$content" | pkexec tee "$dest" >/dev/null
+    return
+  fi
+  echo "cannot write $dest (need sudo or pkexec)" >&2
+  return 1
+}
+
+set_charge() {
+  local pct="$1"
+  [[ -e $BAT_END ]] || { echo "charge limit: unavailable"; return 0; }
+  if [[ -r $BAT_END && $(cat "$BAT_END") == "$pct" ]]; then
+    echo "charge limit: ${pct}% (already set)"
+    return 0
+  fi
+  root_write "$BAT_END" "$pct" || return 0
+  echo "charge limit: $(cat "$BAT_END")%"
+}
+
+set_thermal() {
+  # asus-nb-wmi: 0 default, 1 overboost, 2 silent
+  local policy="$1"
+  try_write "$THERMAL" "$policy"
+  if [[ -r $THERMAL ]]; then
+    echo "thermal policy: $(cat "$THERMAL")"
+  fi
+}
+
+kbd_get() {
+  brightnessctl --device="$KBD_LED" get 2>/dev/null || echo ""
+}
+
+kbd_set() {
+  local value="$1"
+  [[ -n $value ]] || return 0
+  brightnessctl --device="$KBD_LED" set "$value" >/dev/null 2>&1 || true
+}
+
+set_kbd() {
+  local mode="$1"
+  local cur
+  cur=$(kbd_get)
+  [[ -n $cur ]] || { echo "keyboard backlight: unavailable"; return 0; }
+  mkdir -p "$STATE_DIR"
+  if [[ $mode == off ]]; then
+    if [[ $cur != 0 ]]; then
+      printf '%s\n' "$cur" >"$KBD_FILE"
+    fi
+    kbd_set 0
+    echo "keyboard backlight: off"
+  else
+    local restore="$cur"
+    if [[ -f $KBD_FILE ]]; then
+      restore=$(cat "$KBD_FILE")
+    fi
+    [[ -n $restore ]] || restore="$cur"
+    kbd_set "$restore"
+    echo "keyboard backlight: $(kbd_get)"
+  fi
+}
+
+chromium_features_line() {
+  local file="$1" key="$2"
+  [[ -f $file ]] || { echo ""; return; }
+  awk -v k="$key" 'index($0, k"=")==1 { sub(/^[^=]+=/,""); print; exit }' "$file"
+}
+
+ensure_vaapi() {
+  [[ -f $CHROMIUM_FLAGS ]] || return 0
+  grep -q 'VaapiVideoDecoder' "$CHROMIUM_FLAGS" 2>/dev/null && return 0
+  mkdir -p "$(dirname "$CHROMIUM_FLAGS")"
+  touch "$CHROMIUM_FLAGS"
+  local tmp enable disable
+  tmp=$(mktemp)
+  enable=$(chromium_features_line "$CHROMIUM_FLAGS" --enable-features)
+  disable=$(chromium_features_line "$CHROMIUM_FLAGS" --disable-features)
+  enable=$(python3 -c '
+import sys
+seen=set(); out=[]
+for part in sys.argv[1:]:
+    for item in part.split(","):
+        item=item.strip()
+        if item and item not in seen:
+            seen.add(item); out.append(item)
+print(",".join(out))
+' "$enable" "$VAAPI_ENABLE_FEATURES")
+  disable=$(python3 -c '
+import sys
+seen=set(); out=[]
+for part in sys.argv[1:]:
+    for item in part.split(","):
+        item=item.strip()
+        if item and item not in seen:
+            seen.add(item); out.append(item)
+print(",".join(out))
+' "$disable" "$VAAPI_DISABLE_FEATURES")
+  awk '
+    $0 ~ /^--enable-features=/ { next }
+    $0 ~ /^--disable-features=/ { next }
+    { print }
+  ' "$CHROMIUM_FLAGS" >"$tmp"
+  [[ -n $enable ]] && printf '%s\n' "--enable-features=${enable}" >>"$tmp"
+  [[ -n $disable ]] && printf '%s\n' "--disable-features=${disable}" >>"$tmp"
+  mv "$tmp" "$CHROMIUM_FLAGS"
+  echo "chromium VAAPI: on"
+}
+
+remember_ppd() {
+  local profile="$1" source
+  source=$(resolve_source)
+  if command -v omarchy-powerprofiles-set >/dev/null; then
+    omarchy-powerprofiles-set "$source" "$profile"
+  else
+    powerprofilesctl set "$profile"
+  fi
+  echo "power profile: $(powerprofilesctl get) ($source)"
+}
+
+set_ppd_only() {
+  powerprofilesctl set "$1"
+  echo "power profile: $(powerprofilesctl get)"
+}
+
+current_refresh() {
+  hyprctl monitors -j 2>/dev/null | python3 -c '
+import json,sys
+try:
+    mons=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for m in mons:
+    if m.get("name")=="'"$MONITOR"'":
+        print(int(round(float(m.get("refreshRate") or 0))))
+        break
+' 2>/dev/null || true
+}
+
+cmd_status() {
+  local last="(none)"
+  [[ -f $STATE_FILE ]] && last=$(cat "$STATE_FILE")
+  echo "last profile:     $last"
+  echo "power profile:    $(current_ppd)"
+  echo "acpi platform:    $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo unknown)"
+  echo "cpu governor:     $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"
+  echo "cpu epp:          $(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || echo unknown)"
+  echo "thermal policy:   $(cat "$THERMAL" 2>/dev/null || echo unknown)"
+  echo "refresh:          $(current_refresh || echo unknown) Hz"
+  echo "charge limit:     $(cat "$BAT_END" 2>/dev/null || echo unknown)%"
+  echo "keyboard light:   $(kbd_get || echo unknown)"
+  echo "animations:       $(hyprctl getoption animations:enabled -j 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("on" if d.get("bool") is True or d.get("int")==1 else "off")' 2>/dev/null || echo unknown)"
+}
+
+cmd_shell_status() {
+  printf 'profile\t%s\n' "$( [[ -f $STATE_FILE ]] && cat "$STATE_FILE" || echo none )"
+  printf 'ppd\t%s\n' "$(current_ppd)"
+  printf 'refresh\t%s Hz\n' "$(current_refresh || echo "?")"
+  printf 'charge\t%s%%\n' "$(cat "$BAT_END" 2>/dev/null || echo "?")"
+  printf 'kbd\t%s\n' "$(kbd_get || echo "?")"
+  printf 'thermal\t%s\n' "$(cat "$THERMAL" 2>/dev/null || echo "?")"
+}
+
+apply_extras() {
+  local profile="$1"
+  local hz=120 anim=on pct=80 kbd=on thermal=0
+  case "$profile" in
+    performance) hz=120; anim=on;  pct=100; kbd=on;  thermal=1 ;;
+    balanced)    hz=120; anim=on;  pct=80;  kbd=on;  thermal=0 ;;
+    power-saver) hz=60;  anim=off; pct=80;  kbd=off; thermal=2 ;;
+  esac
+  set_refresh "$hz" || true
+  set_animations "$anim" || true
+  set_kbd "$kbd" || true
+  set_thermal "$thermal" || true
+  set_charge "$pct" || true
+  ensure_vaapi || true
+  save_state "$profile"
+}
+
+apply_profile() {
+  local profile="$1"
+  if (( TUNE_ONLY )); then
+    apply_extras "$profile"
+  elif (( REMEMBER )); then
+    remember_ppd "$profile"
+    apply_extras "$profile"
+  else
+    set_ppd_only "$profile"
+    apply_extras "$profile"
+  fi
+  echo "profile: $profile"
+}
+
+main() {
+  local args=()
+  while (( $# )); do
+    case "$1" in
+      --remember) REMEMBER=1 ;;
+      --no-remember) REMEMBER=0 ;;
+      --tune-only) TUNE_ONLY=1; REMEMBER=0 ;;
+      --source)
+        SOURCE="${2:-}"
+        [[ -n $SOURCE ]] || { echo "--source needs ac or battery" >&2; exit 2; }
+        shift
+        ;;
+      --source=*) SOURCE="${1#--source=}" ;;
+      -h|--help) usage; return 0 ;;
+      *) args+=("$1") ;;
+    esac
+    shift
+  done
+  case "${SOURCE}" in
+    ""|ac|battery) ;;
+    *) echo "source: ac|battery" >&2; exit 2 ;;
+  esac
+
+  local cmd="${args[0]:-}"
+  case "$cmd" in
+    "" ) usage ;;
+    status) cmd_status ;;
+    --shell-status|shell-status) cmd_shell_status ;;
+    autodetect)
+      apply_profile "$(map_profile "$(current_ppd)" || echo balanced)"
+      ;;
+    performance|balanced|power-saver|battery)
+      apply_profile "$(map_profile "$cmd")"
+      ;;
+    *)
+      echo "unknown command: $cmd" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
