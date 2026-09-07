@@ -31,7 +31,9 @@ The shell loads the copy under `~/.config/omarchy/plugins/vivobook.s14-copilot`
 (a git clone). A symlink there will not load.
 
 The stock power menu still sets the PPD profile. This service applies the
-matching extras whenever that profile or the power source changes.
+matching extras whenever that profile or the power source changes. The
+profile CLI in `bin/omarchy-vivobook-profile` is shipped with the plugin and
+calls `bin/apply` for the performance / balanced / battery bundles.
 
 Open **Customize extras** from the power menu (or run
 `omarchy-shell vivobook.s14-copilot open '{}'`). That panel edits
@@ -83,7 +85,8 @@ prompting on every unplug.
 
 ## Files
 
-- `bin/apply` — CLI used by the service and by a cloned power menu
+- `bin/apply` — tuner used by the service and by a cloned power menu
+- `bin/omarchy-vivobook-profile` — CLI for profiles, VAAPI, and cleanup
 - `bin/config` — merge defaults with the user JSON
 - `Service.qml` — watches UPower + PPD, and hosts the customize overlay
 - `images/` — customize overlay and power menu screenshots
@@ -91,6 +94,8 @@ prompting on every unplug.
 ```bash
 ~/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply status
 ~/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply balanced
+~/.config/omarchy/plugins/vivobook.s14-copilot/bin/omarchy-vivobook-profile status
+~/.config/omarchy/plugins/vivobook.s14-copilot/bin/omarchy-vivobook-profile battery
 ```
 
 ## Remove

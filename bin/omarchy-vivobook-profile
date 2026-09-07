@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+# Profile switcher for Omarchy on the ASUS Vivobook S14 S5406SA
+# (Core Ultra 7 258V, Intel Arc, 2880x1800@120 panel).
+set -euo pipefail
+
+MONITOR="${OMARCHY_VIVOBOOK_MONITOR:-eDP-1}"
+RES="2880x1800"
+SCALE="${OMARCHY_VIVOBOOK_SCALE:-2}"
+BAT_END="/sys/class/power_supply/BAT0/charge_control_end_threshold"
+CHROMIUM_FLAGS="${XDG_CONFIG_HOME:-$HOME/.config}/chromium-flags.conf"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-vivobook-profile"
+STATE_FILE="$STATE_DIR/current"
+
+VAAPI_ENABLE_FEATURES="VaapiVideoDecoder,VaapiIgnoreDriverChecks"
+VAAPI_DISABLE_FEATURES="UseChromeOSDirectVideoDecoder"
+
+usage() {
+  cat <<'EOF'
+Usage: omarchy-vivobook-profile <command> [args]
+       omarchy-vivobook-profile help
+       omarchy-vivobook-profile help <command>
+       omarchy-vivobook-profile <command> --help
+
+Profiles (apply a bundle):
+  performance     AC / plugged in: performance PPD, 120 Hz, animations on, charge 100%
+  balanced        Everyday: balanced PPD, 120 Hz, animations on, charge 80%
+  battery         On battery: power-saver PPD, 60 Hz, animations off, charge 80%
+
+Pieces (mix and match):
+  status          Show current profile, PPD, refresh, charge limit, VAAPI
+  apply-saved     Re-apply the last profile
+  ppd <name>      performance | balanced | power-saver
+  refresh <hz>    60 | 120
+  charge <pct>    80 | 100   (needs sudo/pkexec)
+  animations <on|off>
+  vaapi <on|off>  Chromium GPU video decode (see: help vaapi)
+
+One-shot cleanup (asks before deleting):
+  cleanup nvidia  Remove unused NVIDIA userspace (no NVIDIA GPU on this laptop)
+  cleanup ollama-cuda  Remove ~/.local/lib/ollama/cuda_v12 and cuda_v13
+
+Examples:
+  omarchy-vivobook-profile help battery
+  omarchy-vivobook-profile battery --help
+  omarchy-vivobook-profile battery
+EOF
+}
+
+help_for() {
+  local topic="${1:-}"
+  case "$topic" in
+    ""|help)
+      usage
+      ;;
+    performance)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile performance
+
+For AC / plugged-in work. Applies:
+  power profile   performance
+  panel           2880x1800@120, scale 2
+  animations      on
+  charge limit    100%
+
+Refresh rate and animations last for this session. Power-profiles-daemon
+already remembers the PPD choice. The plugin service reapplies extras when
+the power source or PPD profile changes.
+EOF
+      ;;
+    balanced)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile balanced
+
+Everyday default. Applies:
+  power profile   balanced
+  panel           2880x1800@120, scale 2
+  animations      on
+  charge limit    80%
+
+Refresh rate and animations last for this session.
+EOF
+      ;;
+    battery)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile battery
+
+For running on battery. Applies:
+  power profile   power-saver
+  panel           2880x1800@60, scale 2
+  animations      off
+  charge limit    80%
+
+Refresh rate and animations last for this session.
+EOF
+      ;;
+    status)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile status
+
+Prints the last applied profile and the live power profile, panel Hz,
+charge limit, animations, and Chromium VAAPI state.
+EOF
+      ;;
+    apply-saved)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile apply-saved
+
+Re-applies the last profile from ~/.local/state/omarchy-vivobook-profile/current.
+EOF
+      ;;
+    ppd)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile ppd <performance|balanced|power-saver>
+
+Sets only power-profiles-daemon. Survives reboot on its own.
+Does not change refresh rate, animations, or charge limit.
+EOF
+      ;;
+    refresh)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile refresh <60|120>
+
+Sets the internal panel (eDP-1) to 2880x1800 at that Hz, scale 2.
+Lasts for this session.
+EOF
+      ;;
+    charge)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile charge <80|100>
+
+Write BAT0 charge_control_end_threshold (needs sudo/pkexec).
+EOF
+      ;;
+    animations)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile animations <on|off>
+
+Toggles Hyprland animations:enabled for this session.
+EOF
+      ;;
+    vaapi)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile vaapi <on|off>
+
+What it is
+  VAAPI (Video Acceleration API) lets Chromium decode video on the Intel Arc
+  iGPU instead of the CPU. This machine already has intel-media-driver; these
+  flags only tell Chromium to use it (Wayland, Lunar Lake Arc 130V/140V).
+
+What changes
+  on   add --enable-features=VaapiVideoDecoder,VaapiIgnoreDriverChecks
+       and --disable-features=UseChromeOSDirectVideoDecoder
+       in ~/.config/chromium-flags.conf (other flags are kept)
+  off  remove those VAAPI flags only
+
+On or off?
+  Prefer on for this laptop: YouTube/local video uses less CPU, less heat,
+  and less battery. That is the better default.
+  Turn it off if playback is broken (green/black frames, stutter, crashes).
+  Intel VAAPI on Xe/Arc + Chromium is usually fine, but not guaranteed.
+
+After changing it, fully quit Chromium and reopen. Confirm at chrome://gpu
+("Video Decode: Hardware accelerated"). This flag file already lasts
+across reboots.
+EOF
+      ;;
+    cleanup)
+      cat <<'EOF'
+Usage: omarchy-vivobook-profile cleanup <nvidia|ollama-cuda>
+
+nvidia        pacman -Rcs nvidia-utils lib32-nvidia-utils (dry-run, then confirm).
+              This machine has Intel Arc only; those packages came in with Steam.
+ollama-cuda   Delete ~/.local/lib/ollama/cuda_v12 and cuda_v13; keep vulkan.
+
+Both ask for confirmation on a tty.
+EOF
+      ;;
+    *)
+      echo "no help for '$topic'" >&2
+      echo "commands: performance balanced battery status apply-saved ppd refresh charge animations vaapi cleanup" >&2
+      return 2
+      ;;
+  esac
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "missing command: $1" >&2
+    return 1
+  }
+}
+
+root_write() {
+  local dest="$1" content="$2"
+  if [[ -w $(dirname "$dest") ]] && { [[ ! -e "$dest" ]] || [[ -w "$dest" ]]; }; then
+    printf '%s\n' "$content" >"$dest"
+    return
+  fi
+  if [[ -t 0 ]] && command -v sudo >/dev/null; then
+    printf '%s\n' "$content" | sudo tee "$dest" >/dev/null
+    return
+  fi
+  if command -v pkexec >/dev/null; then
+    printf '%s\n' "$content" | pkexec tee "$dest" >/dev/null
+    return
+  fi
+  echo "cannot write $dest (need sudo or pkexec)" >&2
+  return 1
+}
+
+save_state() {
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$1" >"$STATE_FILE"
+}
+
+current_refresh() {
+  hyprctl monitors -j 2>/dev/null | python3 -c '
+import json,sys
+try:
+    mons=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for m in mons:
+    if m.get("name")=="'"$MONITOR"'":
+        print(int(round(float(m.get("refreshRate") or 0))))
+        break
+' 2>/dev/null || true
+}
+
+set_ppd() {
+  need_cmd powerprofilesctl
+  powerprofilesctl set "$1"
+  echo "power profile: $(powerprofilesctl get)"
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
+PLUGIN_APPLY="$SCRIPT_DIR/apply"
+
+hypr_eval() {
+  need_cmd hyprctl
+  hyprctl eval "$1" >/dev/null
+}
+
+set_refresh() {
+  local hz="$1"
+  hypr_eval "hl.monitor({ output = \"${MONITOR}\", mode = \"${RES}@${hz}\", position = \"0x0\", scale = ${SCALE} })"
+  echo "display: ${MONITOR} ${RES}@${hz} scale ${SCALE}"
+}
+
+set_animations() {
+  local on="$1"
+  local enabled=true
+  [[ "$on" == "off" ]] && enabled=false
+  hypr_eval "hl.config({ animations = { enabled = ${enabled} } })"
+  echo "animations: $on"
+}
+
+set_charge() {
+  local pct="$1"
+  if [[ ! -e "$BAT_END" ]]; then
+    echo "no battery charge threshold at $BAT_END" >&2
+    return 1
+  fi
+  if [[ -r "$BAT_END" && $(cat "$BAT_END") == "$pct" ]]; then
+    echo "charge limit: ${pct}% (already set)"
+    return 0
+  fi
+  root_write "$BAT_END" "$pct"
+  echo "charge limit: $(cat "$BAT_END")%"
+}
+
+chromium_features_line() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || { echo ""; return; }
+  awk -v k="$key" 'index($0, k"=")==1 { sub(/^[^=]+=/,""); print; exit }' "$file"
+}
+
+set_vaapi() {
+  local mode="$1"
+  mkdir -p "$(dirname "$CHROMIUM_FLAGS")"
+  touch "$CHROMIUM_FLAGS"
+  local tmp
+  tmp=$(mktemp)
+  local enable disable
+  enable=$(chromium_features_line "$CHROMIUM_FLAGS" --enable-features)
+  disable=$(chromium_features_line "$CHROMIUM_FLAGS" --disable-features)
+
+  merge_csv() {
+    python3 -c '
+import sys
+seen=set(); out=[]
+for part in sys.argv[1:]:
+    for item in part.split(","):
+        item=item.strip()
+        if item and item not in seen:
+            seen.add(item); out.append(item)
+print(",".join(out))
+' "$@"
+  }
+
+  drop_csv() {
+    python3 -c '
+import sys
+drop=set(sys.argv[1].split(","))
+keep=[]
+for item in sys.argv[2].split(","):
+    item=item.strip()
+    if item and item not in drop:
+        keep.append(item)
+print(",".join(keep))
+' "$@"
+  }
+
+  if [[ "$mode" == "on" ]]; then
+    enable=$(merge_csv "$enable" "$VAAPI_ENABLE_FEATURES")
+    disable=$(merge_csv "$disable" "$VAAPI_DISABLE_FEATURES")
+  else
+    enable=$(drop_csv "$VAAPI_ENABLE_FEATURES" "$enable")
+    disable=$(drop_csv "$VAAPI_DISABLE_FEATURES" "$disable")
+  fi
+
+  # Rewrite flags file: drop old feature lines, keep everything else, append merged.
+  awk '
+    $0 ~ /^--enable-features=/ { next }
+    $0 ~ /^--disable-features=/ { next }
+    { print }
+  ' "$CHROMIUM_FLAGS" >"$tmp"
+  [[ -n "$enable" ]] && printf '%s\n' "--enable-features=${enable}" >>"$tmp"
+  [[ -n "$disable" ]] && printf '%s\n' "--disable-features=${disable}" >>"$tmp"
+  mv "$tmp" "$CHROMIUM_FLAGS"
+  echo "chromium VAAPI: $mode (restart Chromium; check chrome://gpu)"
+}
+
+vaapi_status() {
+  if [[ -f "$CHROMIUM_FLAGS" ]] && grep -q 'VaapiVideoDecoder' "$CHROMIUM_FLAGS"; then
+    echo on
+  else
+    echo off
+  fi
+}
+
+cmd_status() {
+  local last="(none)"
+  [[ -f "$STATE_FILE" ]] && last=$(cat "$STATE_FILE")
+  echo "last profile:     $last"
+  echo "power profile:    $(powerprofilesctl get 2>/dev/null || echo unknown)"
+  echo "acpi platform:    $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo unknown)"
+  echo "cpu governor:     $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"
+  echo "refresh:          $(current_refresh || echo unknown) Hz"
+  echo "charge limit:     $(cat "$BAT_END" 2>/dev/null || echo unknown)%"
+  echo "animations:       $(hyprctl getoption animations:enabled -j 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("on" if d.get("bool") is True or d.get("int")==1 else "off")' 2>/dev/null || echo unknown)"
+  echo "chromium VAAPI:   $(vaapi_status)"
+  echo "gpu driver:       $(basename "$(readlink -f /sys/class/drm/card0/device/driver 2>/dev/null)" 2>/dev/null || echo unknown)"
+}
+
+cmd_performance() {
+  if [[ -x $PLUGIN_APPLY ]]; then
+    "$PLUGIN_APPLY" --remember performance
+  else
+    set_ppd performance
+    set_refresh 120
+    set_animations on
+    set_charge 100 || true
+    save_state performance
+    echo "profile: performance"
+  fi
+}
+
+cmd_balanced() {
+  if [[ -x $PLUGIN_APPLY ]]; then
+    "$PLUGIN_APPLY" --remember balanced
+  else
+    set_ppd balanced
+    set_refresh 120
+    set_animations on
+    set_charge 80 || true
+    save_state balanced
+    echo "profile: balanced"
+  fi
+}
+
+cmd_battery() {
+  if [[ -x $PLUGIN_APPLY ]]; then
+    "$PLUGIN_APPLY" --remember power-saver
+  else
+    set_ppd power-saver
+    set_refresh 60
+    set_animations off
+    set_charge 80 || true
+    save_state battery
+    echo "profile: battery"
+  fi
+}
+
+cmd_apply_saved() {
+  local last=""
+  [[ -f "$STATE_FILE" ]] && last=$(cat "$STATE_FILE")
+  case "$last" in
+    performance|balanced|battery|power-saver)
+      [[ $last == power-saver ]] && last=battery
+      "cmd_$last"
+      ;;
+    *)
+      echo "no saved profile to apply"
+      ;;
+  esac
+}
+
+confirm() {
+  local prompt="$1"
+  if [[ ! -t 0 ]]; then
+    echo "refusing destructive action without a tty" >&2
+    return 1
+  fi
+  read -r -p "$prompt [y/N] " ans
+  [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]
+}
+
+cmd_cleanup_nvidia() {
+  echo "This laptop has Intel Arc only. nvidia-utils was pulled in by Steam."
+  echo "Dry-run:"
+  pacman -Rcs --print nvidia-utils lib32-nvidia-utils 2>/dev/null | head -40
+  echo
+  confirm "Remove nvidia-utils and lib32-nvidia-utils?" || return 1
+  if [[ -t 0 ]] && command -v sudo >/dev/null; then
+    sudo pacman -Rcs --noconfirm nvidia-utils lib32-nvidia-utils
+  else
+    pkexec pacman -Rcs --noconfirm nvidia-utils lib32-nvidia-utils
+  fi
+}
+
+cmd_cleanup_ollama_cuda() {
+  local d12="$HOME/.local/lib/ollama/cuda_v12"
+  local d13="$HOME/.local/lib/ollama/cuda_v13"
+  echo "These CUDA extra libs are unused without an NVIDIA GPU:"
+  du -sh "$d12" "$d13" 2>/dev/null || true
+  confirm "Delete cuda_v12 and cuda_v13?" || return 1
+  rm -rf --one-file-system -- "$d12" "$d13"
+  echo "kept $(ls -d "$HOME/.local/lib/ollama/vulkan" 2>/dev/null || echo vulkan-missing)"
+}
+
+main() {
+  local args=()
+  local want_help=0
+  local a
+  for a in "$@"; do
+    case "$a" in
+      -h|--help) want_help=1 ;;
+      *) args+=("$a") ;;
+    esac
+  done
+  set -- "${args[@]}"
+
+  local cmd="${1:-}"
+  shift || true
+
+  if (( want_help )); then
+    help_for "$cmd"
+    return
+  fi
+
+  case "$cmd" in
+    "") usage ;;
+    help) help_for "${1:-}" ;;
+    status) cmd_status ;;
+    apply-saved) cmd_apply_saved ;;
+    performance) cmd_performance ;;
+    balanced) cmd_balanced ;;
+    battery) cmd_battery ;;
+    ppd)
+      [[ "${1:-}" =~ ^(performance|balanced|power-saver)$ ]] || { echo "ppd: performance|balanced|power-saver" >&2; exit 2; }
+      set_ppd "$1"
+      ;;
+    refresh)
+      [[ "${1:-}" =~ ^(60|120)$ ]] || { echo "refresh: 60|120" >&2; exit 2; }
+      set_refresh "$1"
+      ;;
+    charge)
+      case "${1:-}" in
+        80|100) set_charge "$1" ;;
+        *) echo "charge: 80|100" >&2; exit 2 ;;
+      esac
+      ;;
+    animations)
+      [[ "${1:-}" =~ ^(on|off)$ ]] || { echo "animations: on|off" >&2; exit 2; }
+      set_animations "$1"
+      ;;
+    vaapi)
+      [[ "${1:-}" =~ ^(on|off)$ ]] || { echo "vaapi: on|off" >&2; exit 2; }
+      set_vaapi "$1"
+      ;;
+    cleanup)
+      case "${1:-}" in
+        nvidia) cmd_cleanup_nvidia ;;
+        ollama-cuda) cmd_cleanup_ollama_cuda ;;
+        *) echo "cleanup: nvidia|ollama-cuda" >&2; exit 2 ;;
+      esac
+      ;;
+    *)
+      echo "unknown command: $cmd" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
