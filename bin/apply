@@ -10,6 +10,10 @@ MONITOR="${OMARCHY_VIVOBOOK_MONITOR:-eDP-1}"
 RES="2880x1800"
 SCALE="${OMARCHY_VIVOBOOK_SCALE:-2}"
 BAT_END="/sys/class/power_supply/BAT0/charge_control_end_threshold"
+CHARGE_HELPER="/usr/local/lib/vivobook-s14-copilot/set-charge-limit"
+CHARGE_SUDOERS="/etc/sudoers.d/vivobook-s14-copilot"
+CHARGE_UNIT_DST="/etc/systemd/system/vivobook-s14-copilot-charge.service"
+CHARGE_STATE_DIR="/var/lib/vivobook-s14-copilot"
 THERMAL="/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
 KBD_LED="asus::kbd_backlight"
 CHROMIUM_FLAGS="${XDG_CONFIG_HOME:-$HOME/.config}/chromium-flags.conf"
@@ -32,6 +36,10 @@ Usage: apply [--remember|--no-remember] [--tune-only] [--source ac|battery]
              <performance|balanced|power-saver|autodetect|unplug>
        apply status
        apply --shell-status
+       apply charge <80|100>
+       apply setup
+       apply helper-ready
+       apply teardown
 
 Maps Omarchy power-profile buttons onto Vivobook S14 Copilot+ extras.
 Per-profile knobs live in ~/.config/omarchy/vivobook-s14-copilot.json
@@ -42,6 +50,11 @@ Defaults:
   balanced     120 Hz, animations on, charge 80%,  kbd restored
   power-saver  60 Hz,  animations off, charge 80%, kbd off
   unplug       force power-saver extras unless autoBattery is off
+
+Charge limit writes need root. The plugin prompts once via Omarchy
+polkit (or `apply setup` in a terminal). After that, 80%/100% is
+passwordless. The pack does not drain down to 80%; the limit only
+stops charging past that point.
 
 --remember (default) also stores the PPD choice for AC vs battery via
 omarchy-powerprofiles-set. --tune-only only applies extras (the profile
@@ -117,33 +130,129 @@ try_write() {
   fi
 }
 
-root_write() {
-  local dest="$1" content="$2"
-  if [[ -w $(dirname "$dest") ]] && { [[ ! -e $dest ]] || [[ -w $dest ]]; }; then
-    printf '%s\n' "$content" >"$dest"
-    return
+charge_now() {
+  local path="$1"
+  [[ -r $path ]] || return 1
+  tr -d ' \n' <"$path"
+}
+
+charge_helper_ready() {
+  [[ -x $CHARGE_HELPER ]] && sudo -n "$CHARGE_HELPER" --ok >/dev/null 2>&1
+}
+
+install_charge_helper() {
+  local helper_src="$PLUGIN_DIR/bin/set-charge-limit"
+  local unit_src="$PLUGIN_DIR/system/vivobook-s14-copilot-charge.service"
+  local tmp
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "need root" >&2; return 1; }
+  [[ -x $helper_src ]] || { echo "missing $helper_src" >&2; return 1; }
+  [[ -f $unit_src ]] || { echo "missing $unit_src" >&2; return 1; }
+  install -D -m755 "$helper_src" "$CHARGE_HELPER"
+  tmp="${CHARGE_SUDOERS}.tmp"
+  cat >"$tmp" <<EOF
+%wheel ALL=(root) NOPASSWD: $CHARGE_HELPER 80, $CHARGE_HELPER 100, $CHARGE_HELPER --restore, $CHARGE_HELPER --ok
+EOF
+  chmod 440 "$tmp"
+  if ! visudo -cf "$tmp"; then
+    rm -f "$tmp"
+    echo "invalid sudoers fragment" >&2
+    return 1
   fi
+  mv "$tmp" "$CHARGE_SUDOERS"
+  install -D -m644 "$unit_src" "$CHARGE_UNIT_DST"
+  systemctl daemon-reload
+  systemctl enable --now vivobook-s14-copilot-charge.service
+  echo "charge-limit helper: $CHARGE_HELPER"
+}
+
+elevate_setup() {
   if [[ -t 0 ]] && command -v sudo >/dev/null; then
-    printf '%s\n' "$content" | sudo tee "$dest" >/dev/null
+    sudo "$SCRIPT_PATH" setup
+  elif command -v pkexec >/dev/null; then
+    pkexec "$SCRIPT_PATH" setup
+  else
+    echo "run as root: $SCRIPT_PATH setup" >&2
+    return 1
+  fi
+}
+
+ensure_charge_helper() {
+  charge_helper_ready && return 0
+  [[ ${OMARCHY_VIVOBOOK_SKIP_CHARGE_SETUP:-} == 1 ]] && return 1
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    install_charge_helper
     return
   fi
-  if command -v pkexec >/dev/null; then
-    printf '%s\n' "$content" | pkexec tee "$dest" >/dev/null
-    return
-  fi
-  echo "cannot write $dest (need sudo or pkexec)" >&2
-  return 1
+  elevate_setup || return 1
+  charge_helper_ready
 }
 
 set_charge() {
-  local pct="$1"
+  local pct="$1" now
+  [[ $pct == 80 || $pct == 100 ]] || { echo "charge: 80|100" >&2; return 2; }
   [[ -e $BAT_END ]] || { echo "charge limit: unavailable"; return 0; }
-  if [[ -r $BAT_END && $(cat "$BAT_END") == "$pct" ]]; then
+  now=$(charge_now "$BAT_END" || true)
+  if [[ $now == "$pct" ]]; then
     echo "charge limit: ${pct}% (already set)"
     return 0
   fi
-  root_write "$BAT_END" "$pct" || return 0
-  echo "charge limit: $(cat "$BAT_END")%"
+  if [[ -w $BAT_END ]]; then
+    printf '%s\n' "$pct" >"$BAT_END"
+    echo "charge limit: $(charge_now "$BAT_END")%"
+    return 0
+  fi
+  if charge_helper_ready && sudo -n "$CHARGE_HELPER" "$pct"; then
+    return 0
+  fi
+  if ensure_charge_helper && sudo -n "$CHARGE_HELPER" "$pct"; then
+    return 0
+  fi
+  echo "charge limit: not applied (want ${pct}%; authenticate in the polkit dialog or run $PLUGIN_DIR/bin/apply setup)" >&2
+  return 0
+}
+
+cmd_charge() {
+  set_charge "$1"
+}
+
+cmd_helper_ready() {
+  if charge_helper_ready; then
+    return 0
+  fi
+  return 1
+}
+
+cmd_setup() {
+  local profile
+  if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    ensure_charge_helper || return 1
+    profile=$(map_profile "$(current_ppd)" || echo balanced)
+    load_profile_opts "$profile"
+    if [[ ${CHARGE:-} != skip && -n ${CHARGE:-} ]]; then
+      set_charge "$CHARGE"
+    fi
+    return 0
+  fi
+  install_charge_helper
+}
+
+cmd_teardown() {
+  if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    if [[ -t 0 ]] && command -v sudo >/dev/null; then
+      exec sudo "$SCRIPT_PATH" teardown
+    fi
+    if command -v pkexec >/dev/null; then
+      exec pkexec "$SCRIPT_PATH" teardown
+    fi
+    echo "run as root: $SCRIPT_PATH teardown" >&2
+    return 1
+  fi
+  systemctl disable --now vivobook-s14-copilot-charge.service 2>/dev/null || true
+  rm -f "$CHARGE_UNIT_DST" "$CHARGE_SUDOERS" "$CHARGE_HELPER"
+  rm -rf --one-file-system -- "$CHARGE_STATE_DIR"
+  rmdir /usr/local/lib/vivobook-s14-copilot 2>/dev/null || true
+  systemctl daemon-reload
+  echo "charge-limit helper removed"
 }
 
 set_thermal() {
@@ -274,7 +383,15 @@ cmd_status() {
   echo "cpu epp:          $(cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null || echo unknown)"
   echo "thermal policy:   $(cat "$THERMAL" 2>/dev/null || echo unknown)"
   echo "refresh:          $(current_refresh || echo unknown) Hz"
+  echo "battery:          $(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null || echo unknown)% $(cat /sys/class/power_supply/BAT0/status 2>/dev/null || true)"
   echo "charge limit:     $(cat "$BAT_END" 2>/dev/null || echo unknown)%"
+  if charge_helper_ready; then
+    echo "charge helper:    ready"
+  elif [[ -x $CHARGE_HELPER ]]; then
+    echo "charge helper:    installed (not passwordless yet)"
+  else
+    echo "charge helper:    missing"
+  fi
   echo "keyboard light:   $(kbd_get || echo unknown)"
   echo "animations:       $(hyprctl getoption animations:enabled -j 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("on" if d.get("bool") is True or d.get("int")==1 else "off")' 2>/dev/null || echo unknown)"
 }
@@ -400,6 +517,13 @@ main() {
     "" ) usage ;;
     status) cmd_status ;;
     --shell-status|shell-status) cmd_shell_status ;;
+    charge)
+      [[ ${args[1]:-} == 80 || ${args[1]:-} == 100 ]] || { echo "charge: 80|100" >&2; exit 2; }
+      cmd_charge "${args[1]}"
+      ;;
+    setup) cmd_setup ;;
+    helper-ready) cmd_helper_ready ;;
+    teardown) cmd_teardown ;;
     autodetect)
       apply_profile "$(map_profile "$(current_ppd)" || echo balanced)"
       ;;

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 022
+
+STATE_DIR=/var/lib/vivobook-s14-copilot
+STATE_FILE="$STATE_DIR/charge-end-threshold"
+
+usage() {
+  echo "Usage: set-charge-limit 80|100|--restore|--ok" >&2
+  exit 2
+}
+
+sysfs_path() {
+  local bat
+  for bat in /sys/class/power_supply/BAT*/charge_control_end_threshold; do
+    [[ -e $bat ]] && { printf '%s\n' "$bat"; return 0; }
+  done
+  return 1
+}
+
+write_threshold() {
+  local pct="$1" dest="$2" got
+  printf '%s\n' "$pct" >"$dest"
+  got=$(tr -d ' \n' <"$dest")
+  if [[ $got != "$pct" ]]; then
+    sleep 0.15
+    printf '%s\n' "$pct" >"$dest"
+    got=$(tr -d ' \n' <"$dest")
+  fi
+  if [[ $got != "$pct" ]]; then
+    echo "failed to set charge limit to ${pct}% (now ${got}%)" >&2
+    return 1
+  fi
+}
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "need root" >&2; exit 1; }
+
+pct="${1:-}"
+if [[ $pct == --ok ]]; then
+  exit 0
+fi
+if [[ $pct == --restore ]]; then
+  [[ -f $STATE_FILE ]] || exit 0
+  pct=$(tr -d ' \n' <"$STATE_FILE")
+fi
+[[ $pct == 80 || $pct == 100 ]] || usage
+
+dest=$(sysfs_path) || { echo "no charge_control_end_threshold" >&2; exit 1; }
+write_threshold "$pct" "$dest"
+mkdir -p "$STATE_DIR"
+printf '%s\n' "$pct" >"$STATE_FILE"
+echo "charge limit: ${pct}%"

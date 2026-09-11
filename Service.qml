@@ -28,6 +28,8 @@ Item {
   property var cfg: Config.defaults()
   property string selectedProfile: "balanced"
   property bool hydrating: false
+  property bool chargeHelperReady: false
+  property bool chargeHelperBusy: false
   readonly property var currentProfile: cfg && cfg.profiles ? cfg.profiles[selectedProfile] : ({})
 
   property color background: Color.menu.background
@@ -88,6 +90,7 @@ Item {
       selectedProfile = payload.profile
     hydrating = true
     settingsFile.reload()
+    refreshChargeHelper()
     settingsOpen = true
     Qt.callLater(function() {
       if (root.settingsOpen) keyCatcher.forceActiveFocus()
@@ -127,6 +130,19 @@ Item {
     saveSoon.restart()
   }
 
+  function refreshChargeHelper() {
+    if (pluginDir === "" || helperReadyProc.running) return
+    helperReadyProc.command = [applyBin, "helper-ready"]
+    helperReadyProc.running = true
+  }
+
+  function installChargeHelper() {
+    if (pluginDir === "" || chargeHelperBusy || setupProc.running) return
+    chargeHelperBusy = true
+    setupProc.command = ["pkexec", applyBin, "setup"]
+    setupProc.running = true
+  }
+
   Timer {
     id: debounce
     interval: 400
@@ -153,7 +169,35 @@ Item {
   Process {
     id: applyProcess
     running: false
-    onExited: if (root.pendingMode !== "") root.runPending()
+    onExited: {
+      root.refreshChargeHelper()
+      if (root.pendingMode !== "") root.runPending()
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() !== "") console.warn("vivobook.s14-copilot", text.trim())
+    }
+  }
+
+  Process {
+    id: helperReadyProc
+    command: [root.applyBin, "helper-ready"]
+    running: false
+    onExited: root.chargeHelperReady = exitCode === 0
+  }
+
+  Process {
+    id: setupProc
+    command: ["pkexec", root.applyBin, "setup"]
+    running: false
+    onExited: {
+      root.chargeHelperBusy = false
+      root.refreshChargeHelper()
+      if (exitCode === 0) {
+        root.lastTunedKey = ""
+        root.applyNow("tune", "")
+      }
+    }
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: if (text.trim() !== "") console.warn("vivobook.s14-copilot", text.trim())
@@ -218,10 +262,12 @@ Item {
     target: "vivobook.s14-copilot"
     function open(payload: string): void { root.openSettings(payload) }
     function close(): void { root.closeSettings() }
+    function setup(): void { root.installChargeHelper() }
   }
 
   Component.onCompleted: {
     root.lastTunedKey = ""
+    root.refreshChargeHelper()
     if (UPower.onBattery)
       root.applyNow("unplug", "")
     else
@@ -371,6 +417,32 @@ Item {
                 { value: "skip", label: "Leave" }
               ]
               onPicked: function(v) { root.setProfileKey("charge", v) }
+            }
+
+            Column {
+              visible: !root.chargeHelperReady
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: "Charge hold needs administrator permission once. Omarchy will ask via polkit; after that Balanced/Power-saver can stop at 80%."
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Button {
+                text: root.chargeHelperBusy ? "Waiting for permission…" : "Enable charge limit"
+                bordered: true
+                active: true
+                enabled: !root.chargeHelperBusy
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.installChargeHelper()
+              }
             }
 
             OptionRow {

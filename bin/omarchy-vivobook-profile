@@ -31,7 +31,7 @@ Pieces (mix and match):
   apply-saved     Re-apply the last profile
   ppd <name>      performance | balanced | power-saver
   refresh <hz>    60 | 120
-  charge <pct>    80 | 100   (needs sudo/pkexec)
+  charge <pct>    80 | 100   (needs apply setup once)
   animations <on|off>
   vaapi <on|off>  Chromium GPU video decode (see: help vaapi)
 
@@ -128,7 +128,8 @@ EOF
       cat <<'EOF'
 Usage: omarchy-vivobook-profile charge <80|100>
 
-Write BAT0 charge_control_end_threshold (needs sudo/pkexec).
+Write BAT0 charge_control_end_threshold via the plugin helper.
+Run apply setup once so this works without a password prompt.
 EOF
       ;;
     animations)
@@ -257,6 +258,10 @@ set_animations() {
 
 set_charge() {
   local pct="$1"
+  if [[ -x $PLUGIN_APPLY ]]; then
+    "$PLUGIN_APPLY" charge "$pct"
+    return
+  fi
   if [[ ! -e "$BAT_END" ]]; then
     echo "no battery charge threshold at $BAT_END" >&2
     return 1

@@ -31,9 +31,12 @@ The shell loads the copy under `~/.config/omarchy/plugins/vivobook.s14-copilot`
 (a git clone). A symlink there will not load.
 
 The stock power menu still sets the PPD profile. This service applies the
-matching extras whenever that profile or the power source changes. The
-profile CLI in `bin/omarchy-vivobook-profile` is shipped with the plugin and
-calls `bin/apply` for the performance / balanced / battery bundles.
+matching extras whenever that profile or the power source changes. Charge
+hold needs root once: Omarchy's polkit dialog asks on first apply (or tap
+**Enable charge limit** in Customize extras). After that it is passwordless
+and restored at boot. The profile CLI in `bin/omarchy-vivobook-profile` is
+shipped with the plugin and calls `bin/apply` for the performance /
+balanced / battery bundles.
 
 Open **Customize extras** from the power menu (or run
 `omarchy-shell vivobook.s14-copilot open '{}'`). That panel edits
@@ -74,8 +77,10 @@ is not touched.
 
 - Session: Hyprland `hl.monitor` / `animations` via `hyprctl eval` (Lua parser).
 - Keyboard backlight via `brightnessctl` on `asus::kbd_backlight`.
-- Charge hold at `BAT0/charge_control_end_threshold` (pkexec only when the
-  value changes).
+- Charge hold at `BAT0/charge_control_end_threshold`. First use installs a
+  root helper via polkit (passwordless for `%wheel` afterward) and a boot
+  restore unit. The pack does not drain down to 80%; the limit only stops
+  further charging.
 - Best-effort `asus-nb-wmi` `throttle_thermal_policy` if sysfs is writable.
 - power-profiles-daemon already drives Intel P-state EPP and ACPI platform
   profile. TLP is not used (it conflicts with PPD).
@@ -86,14 +91,17 @@ prompting on every unplug.
 ## Files
 
 - `bin/apply` — tuner used by the service and by a cloned power menu
+- `bin/set-charge-limit` — root helper copied to `/usr/local/lib` by `apply setup`
 - `bin/omarchy-vivobook-profile` — CLI for profiles, VAAPI, and cleanup
 - `bin/config` — merge defaults with the user JSON
+- `system/vivobook-s14-copilot-charge.service` — restore the last limit at boot
 - `Service.qml` — watches UPower + PPD, and hosts the customize overlay
 - `images/` — customize overlay and power menu screenshots
 
 ```bash
 ~/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply status
 ~/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply balanced
+~/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply setup
 ~/.config/omarchy/plugins/vivobook.s14-copilot/bin/omarchy-vivobook-profile status
 ~/.config/omarchy/plugins/vivobook.s14-copilot/bin/omarchy-vivobook-profile battery
 ```
@@ -101,6 +109,7 @@ prompting on every unplug.
 ## Remove
 
 ```sh
+~/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply teardown
 omarchy plugin remove vivobook.s14-copilot
 ```
 

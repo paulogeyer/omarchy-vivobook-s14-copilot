@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore Vivobook S14 Copilot+ battery charge limit
+After=multi-user.target
+ConditionPathExistsGlob=/sys/class/power_supply/BAT*/charge_control_end_threshold
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/vivobook-s14-copilot/set-charge-limit --restore
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
