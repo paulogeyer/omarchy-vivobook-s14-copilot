@@ -14,11 +14,30 @@ Item {
   property var manifest: null
   property var shell: null
 
-  readonly property string pluginDir: manifest && manifest.__sourceDir ? String(manifest.__sourceDir) : ""
-  readonly property string applyBin: pluginDir + "/bin/apply"
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME") || (home + "/.config")
   readonly property string configPath: configHome + "/omarchy/vivobook-s14-copilot.json"
+
+  function fileFromUrl(url) {
+    var s = String(url || "")
+    if (s.indexOf("file://") === 0) {
+      s = s.substring(7)
+      try { s = decodeURIComponent(s) } catch (e) {}
+    }
+    while (s.length > 1 && s.charAt(s.length - 1) === "/")
+      s = s.substring(0, s.length - 1)
+    return s
+  }
+
+  readonly property string pluginDir: {
+    if (manifest && manifest.__sourceDir)
+      return String(manifest.__sourceDir)
+    var resolved = fileFromUrl(Qt.resolvedUrl("."))
+    if (resolved.indexOf("/") === 0)
+      return resolved
+    return configHome + "/omarchy/plugins/vivobook.s14-copilot"
+  }
+  readonly property string applyBin: pluginDir + "/bin/apply"
 
   property string pendingMode: ""
   property string pendingProfile: ""
