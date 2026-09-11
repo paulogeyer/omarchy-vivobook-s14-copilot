@@ -27,36 +27,29 @@ From a local checkout:
 omarchy plugin add "$HOME/Projects/omarchy-vivobook-s14-copilot" --enable --yes
 ```
 
-The shell loads the copy under `~/.config/omarchy/plugins/vivobook.s14-copilot`
-(a git clone). A symlink there will not load.
+`--enable` loads the background tuner **and** puts this plugin's power widget
+on the bar (same battery icon, profile buttons, plus **Customize extras**).
+Disable or remove stock `omarchy.power` / a local `pg.power` clone so you do
+not get two battery icons. Profile buttons call `bin/apply`; unplug/plug still
+works with the panel closed.
 
-The stock power menu still sets the PPD profile. This service applies the
-matching extras whenever that profile or the power source changes. Charge
-hold needs root once: Omarchy's polkit dialog asks on first apply (or tap
-**Enable charge limit** in Customize extras). After that it is passwordless
-and restored at boot. The profile CLI in `bin/omarchy-vivobook-profile` is
-shipped with the plugin and calls `bin/apply` for the performance /
-balanced / battery bundles.
+Charge hold needs root once: Omarchy's polkit dialog asks on first apply (or
+tap **Enable charge limit** in Customize extras). After that it is passwordless
+and restored at boot.
 
-Open **Customize extras** from the power menu (or run
-`omarchy-shell vivobook.s14-copilot open '{}'`). That panel edits
-per-profile refresh rate, animations, charge limit, keyboard backlight, and
-thermal policy. Choices are saved to
-`~/.config/omarchy/vivobook-s14-copilot.json`.
-
-To have the bar buttons call the tuner directly, clone the stock widget and
-point `setProfile()` at `bin/apply`:
+Open **Customize extras** from the power panel, or:
 
 ```sh
-omarchy plugin clone omarchy.power
+omarchy-shell vivobook.s14-copilot open '{}'
 ```
 
-```qml
-actionProc.command = [
-  Quickshell.env("HOME") + "/.config/omarchy/plugins/vivobook.s14-copilot/bin/apply",
-  "--remember", "--source", source, String(profile)
-]
-```
+Choices are saved to `~/.config/omarchy/vivobook-s14-copilot.json`.
+
+The profile CLI is `bin/omarchy-vivobook-profile` (calls `bin/apply`).
+
+On this machine the canonical git tree is
+`~/Projects/omarchy-vivobook-s14-copilot`;
+`~/.config/omarchy/plugins/vivobook.s14-copilot` is a symlink to it.
 
 ## What each profile does
 
