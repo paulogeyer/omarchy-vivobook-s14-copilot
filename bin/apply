@@ -107,9 +107,22 @@ hypr_eval() {
 }
 
 set_refresh() {
-  local hz="$1"
-  hypr_eval "hl.monitor({ output = \"${MONITOR}\", mode = \"${RES}@${hz}\", position = \"0x0\", scale = ${SCALE} })"
-  echo "display: ${MONITOR} ${RES}@${hz} scale ${SCALE}"
+  local hz="$1" cur
+  command -v hyprctl >/dev/null 2>&1 || return 0
+  cur=$(current_refresh || true)
+  if [[ -n $cur && $cur == "$hz" ]]; then
+    echo "display: ${MONITOR} already ${hz} Hz"
+    return 0
+  fi
+  # xe on this Lunar Lake panel hangs RCS if we modeset 60↔120 while
+  # Hyprland is mid-pageflip (BugReports/2026-09-11-hyprland-xe-hang*).
+  # Blank first so no frames are in flight, then restore DPMS.
+  hyprctl dispatch dpms off "$MONITOR" >/dev/null 2>&1 || hyprctl dispatch dpms off >/dev/null 2>&1 || true
+  sleep 0.45
+  hypr_eval "hl.monitor({ output = \"${MONITOR}\", mode = \"${RES}@${hz}\", position = \"0x0\", scale = ${SCALE} })" || true
+  sleep 0.35
+  hyprctl dispatch dpms on "$MONITOR" >/dev/null 2>&1 || hyprctl dispatch dpms on >/dev/null 2>&1 || true
+  echo "display: ${MONITOR} ${RES}@${hz} scale ${SCALE} (was ${cur:-unknown})"
 }
 
 set_animations() {

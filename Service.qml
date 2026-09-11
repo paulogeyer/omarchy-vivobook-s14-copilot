@@ -279,7 +279,7 @@ Item {
     running: true
     repeat: true
     onTriggered: {
-      if (root.applyProcess.running) return
+      if (applyProcess.running) return
       if (UPower.onBattery) {
         if (root.lastTunedKey !== "unplug") root.applyNow("unplug", "")
       } else {
