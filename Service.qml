@@ -59,17 +59,37 @@ Item {
   property color scrim: Color.menu.scrim
   property string fontFamily: Style.font.family
 
+  property string pendingKey: ""
+
   function applyNow(mode, profile) {
     if (pluginDir === "") return
     pendingMode = mode
     pendingProfile = profile || ""
+    debounce.interval = (mode === "tune" && pendingProfile === "") ? 900 : 400
     debounce.restart()
   }
 
+  function startPpdQuery() {
+    if (ppdQuery.running) {
+      ppdQuery.running = false
+      Qt.callLater(function() {
+        if (root.pendingMode === "tune" && root.pendingProfile === "")
+          ppdQuery.running = true
+      })
+      return
+    }
+    ppdQuery.running = true
+  }
+
   function runPending() {
-    if (pluginDir === "" || applyProcess.running) return
+    if (pluginDir === "") return
+    if (applyProcess.running) return
     var mode = pendingMode
     var profile = pendingProfile
+    if (mode === "tune" && !profile) {
+      startPpdQuery()
+      return
+    }
     pendingMode = ""
     pendingProfile = ""
     if (mode === "") return
@@ -80,7 +100,6 @@ Item {
       cmd.push("unplug")
       key = "unplug"
     } else if (mode === "tune") {
-      if (!profile) return
       cmd.push("--tune-only", profile)
       key = "tune:" + profile + ":" + (UPower.onBattery ? "battery" : "ac")
     } else {
@@ -88,7 +107,7 @@ Item {
     }
 
     if (key === lastTunedKey) return
-    lastTunedKey = key
+    pendingKey = key
     applyProcess.command = cmd
     applyProcess.running = true
   }
@@ -166,13 +185,7 @@ Item {
     id: debounce
     interval: 400
     repeat: false
-    onTriggered: {
-      if (root.pendingMode === "tune" && root.pendingProfile === "") {
-        ppdQuery.running = true
-        return
-      }
-      root.runPending()
-    }
+    onTriggered: root.runPending()
   }
 
   Timer {
@@ -188,7 +201,9 @@ Item {
   Process {
     id: applyProcess
     running: false
-    onExited: {
+    onExited: function(exitCode) {
+      if (exitCode === 0 && root.pendingKey !== "")
+        root.lastTunedKey = root.pendingKey
       root.refreshChargeHelper()
       if (root.pendingMode !== "") root.runPending()
     }
@@ -202,14 +217,16 @@ Item {
     id: helperReadyProc
     command: [root.applyBin, "helper-ready"]
     running: false
-    onExited: root.chargeHelperReady = exitCode === 0
+    onExited: function(exitCode) {
+      root.chargeHelperReady = exitCode === 0
+    }
   }
 
   Process {
     id: setupProc
     command: ["pkexec", root.applyBin, "setup"]
     running: false
-    onExited: {
+    onExited: function(exitCode) {
       root.chargeHelperBusy = false
       root.refreshChargeHelper()
       if (exitCode === 0) {
@@ -250,6 +267,23 @@ Item {
           root.lastTunedKey = ""
           root.applyNow("tune", "")
         }
+      }
+    }
+    onExited: Qt.callLater(function() {
+      if (!ppdMonitor.running) ppdMonitor.running = true
+    })
+  }
+
+  Timer {
+    interval: 2500
+    running: true
+    repeat: true
+    onTriggered: {
+      if (root.applyProcess.running) return
+      if (UPower.onBattery) {
+        if (root.lastTunedKey !== "unplug") root.applyNow("unplug", "")
+      } else {
+        root.applyNow("tune", "")
       }
     }
   }

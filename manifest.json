@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "vivobook.s14-copilot",
   "name": "Vivobook S14 Copilot+",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "license": "MIT",
   "description": "Power extras for the ASUS Vivobook S14 Copilot+ (S5406SA): 120/60 Hz, animations, 80% charge hold, keyboard backlight, and silent thermal policy on top of Omarchy power profiles.",
   "kinds": [
