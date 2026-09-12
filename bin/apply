@@ -93,7 +93,14 @@ map_profile() {
 }
 
 current_ppd() {
-  powerprofilesctl get 2>/dev/null || echo balanced
+  local raw
+  raw=$(busctl get-property org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles org.freedesktop.UPower.PowerProfiles ActiveProfile 2>/dev/null || true)
+  raw=${raw#*\"}
+  raw=${raw%\"*}
+  case "$raw" in
+    performance|balanced|power-saver) printf '%s\n' "$raw" ;;
+    *) echo balanced ;;
+  esac
 }
 
 save_state() {

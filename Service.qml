@@ -242,12 +242,14 @@ Item {
 
   Process {
     id: ppdQuery
-    command: ["powerprofilesctl", "get"]
+    command: ["busctl", "get-property", "org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles", "org.freedesktop.UPower.PowerProfiles", "ActiveProfile"]
     running: false
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var profile = text.trim()
+        var t = String(text || "").trim()
+        var m = t.match(/"([^"]+)"/)
+        var profile = m ? m[1] : t
         if (profile === "performance" || profile === "balanced" || profile === "power-saver") {
           root.pendingMode = "tune"
           root.pendingProfile = profile
@@ -272,20 +274,6 @@ Item {
     onExited: Qt.callLater(function() {
       if (!ppdMonitor.running) ppdMonitor.running = true
     })
-  }
-
-  Timer {
-    interval: 2500
-    running: true
-    repeat: true
-    onTriggered: {
-      if (applyProcess.running) return
-      if (UPower.onBattery) {
-        if (root.lastTunedKey !== "unplug") root.applyNow("unplug", "")
-      } else {
-        root.applyNow("tune", "")
-      }
-    }
   }
 
   Connections {
