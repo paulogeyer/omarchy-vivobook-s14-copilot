@@ -1,3 +1,7 @@
 *~
 *.qmlc
 .DS_Store
+packaging/**/pkg/
+packaging/**/src/
+packaging/**/*.pkg.tar*
+packaging/**/*.log

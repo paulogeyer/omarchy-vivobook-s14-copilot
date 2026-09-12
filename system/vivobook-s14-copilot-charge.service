@@ -5,7 +5,7 @@ ConditionPathExistsGlob=/sys/class/power_supply/BAT*/charge_control_end_threshol
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/vivobook-s14-copilot/set-charge-limit --restore
+ExecStart=/usr/lib/vivobook-s14-copilot/set-charge-limit --restore
 RemainAfterExit=yes
 
 [Install]

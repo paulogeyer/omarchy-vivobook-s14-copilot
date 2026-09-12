@@ -177,7 +177,7 @@ Item {
   function installChargeHelper() {
     if (pluginDir === "" || chargeHelperBusy || setupProc.running) return
     chargeHelperBusy = true
-    setupProc.command = ["pkexec", applyBin, "setup"]
+    setupProc.command = [applyBin, "setup"]
     setupProc.running = true
   }
 
@@ -224,7 +224,7 @@ Item {
 
   Process {
     id: setupProc
-    command: ["pkexec", root.applyBin, "setup"]
+    command: [root.applyBin, "setup"]
     running: false
     onExited: function(exitCode) {
       root.chargeHelperBusy = false
@@ -480,14 +480,14 @@ Item {
               Text {
                 width: parent.width
                 wrapMode: Text.WordWrap
-                text: "Charge hold needs administrator permission once. Omarchy will ask via polkit; after that Balanced/Power-saver can stop at 80%."
+                text: "Charge hold needs package vivobook-s14-copilot-charge (git clone https://github.com/paulogeyer/vivobook-s14-copilot-charge.git && makepkg -si). The plugin never runs as root."
                 color: Qt.darker(root.foreground, 1.4)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
 
               Button {
-                text: root.chargeHelperBusy ? "Waiting for permission…" : "Enable charge limit"
+                text: root.chargeHelperBusy ? "Checking…" : "Recheck charge helper"
                 bordered: true
                 active: true
                 enabled: !root.chargeHelperBusy
