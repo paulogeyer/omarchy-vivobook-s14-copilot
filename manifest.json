@@ -1,8 +1,9 @@
 {
   "schemaVersion": 1,
+  "author": "Paulo Geyer",
   "id": "vivobook.s14-copilot",
   "name": "Vivobook S14 Copilot+",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "license": "MIT",
   "description": "Power extras and bar panel for the ASUS Vivobook S14 Copilot+ (S5406SA): 120/60 Hz, animations, 80% charge hold, keyboard backlight, silent thermal policy, and Customize extras.",
   "kinds": [
