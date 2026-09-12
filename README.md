@@ -93,7 +93,7 @@ prompting on every unplug.
 
 - `bin/apply` — tuner used by the service and by a cloned power menu
 - Charge helper package: [vivobook-s14-copilot-charge](https://github.com/paulogeyer/vivobook-s14-copilot-charge)
-- `bin/omarchy-vivobook-profile` — CLI for profiles, VAAPI, and cleanup
+- `bin/omarchy-vivobook-profile` — CLI for profiles and VAAPI
 - `bin/config` — merge defaults with the user JSON
 - `Service.qml` — watches UPower + PPD, and hosts the customize overlay
 - `images/` — customize overlay and power menu screenshots

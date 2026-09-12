@@ -247,14 +247,7 @@ cmd_setup() {
 }
 
 cmd_teardown() {
-  if pacman -Q vivobook-s14-copilot-charge >/dev/null 2>&1; then
-    echo "Remove with: sudo pacman -R vivobook-s14-copilot-charge"
-    if (( HAVE_TTY )); then
-      sudo pacman -R vivobook-s14-copilot-charge
-    fi
-    return
-  fi
-  echo "package vivobook-s14-copilot-charge is not installed"
+  echo "Remove the charge helper with: sudo pacman -R vivobook-s14-copilot-charge"
 }
 
 set_thermal() {

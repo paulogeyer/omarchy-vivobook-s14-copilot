@@ -31,13 +31,9 @@ Pieces (mix and match):
   apply-saved     Re-apply the last profile
   ppd <name>      performance | balanced | power-saver
   refresh <hz>    60 | 120
-  charge <pct>    80 | 100   (needs apply setup once)
+  charge <pct>    80 | 100
   animations <on|off>
   vaapi <on|off>  Chromium GPU video decode (see: help vaapi)
-
-One-shot cleanup (asks before deleting):
-  cleanup nvidia  Remove unused NVIDIA userspace (no NVIDIA GPU on this laptop)
-  cleanup ollama-cuda  Remove ~/.local/lib/ollama/cuda_v12 and cuda_v13
 
 Examples:
   omarchy-vivobook-profile help battery
@@ -128,8 +124,7 @@ EOF
       cat <<'EOF'
 Usage: omarchy-vivobook-profile charge <80|100>
 
-Write BAT0 charge_control_end_threshold via the plugin helper.
-Run apply setup once so this works without a password prompt.
+Write BAT0 charge_control_end_threshold via bin/apply (package vivobook-s14-copilot-charge).
 EOF
       ;;
     animations)
@@ -165,20 +160,9 @@ After changing it, fully quit Chromium and reopen. Confirm at chrome://gpu
 across reboots.
 EOF
       ;;
-    cleanup)
-      cat <<'EOF'
-Usage: omarchy-vivobook-profile cleanup <nvidia|ollama-cuda>
-
-nvidia        pacman -Rcs nvidia-utils lib32-nvidia-utils (dry-run, then confirm).
-              This machine has Intel Arc only; those packages came in with Steam.
-ollama-cuda   Delete ~/.local/lib/ollama/cuda_v12 and cuda_v13; keep vulkan.
-
-Both ask for confirmation on a tty.
-EOF
-      ;;
     *)
       echo "no help for '$topic'" >&2
-      echo "commands: performance balanced battery status apply-saved ppd refresh charge animations vaapi cleanup" >&2
+      echo "commands: performance balanced battery status apply-saved ppd refresh charge animations vaapi" >&2
       return 2
       ;;
   esac
@@ -189,24 +173,6 @@ need_cmd() {
     echo "missing command: $1" >&2
     return 1
   }
-}
-
-root_write() {
-  local dest="$1" content="$2"
-  if [[ -w $(dirname "$dest") ]] && { [[ ! -e "$dest" ]] || [[ -w "$dest" ]]; }; then
-    printf '%s\n' "$content" >"$dest"
-    return
-  fi
-  if [[ -t 0 ]] && command -v sudo >/dev/null; then
-    printf '%s\n' "$content" | sudo tee "$dest" >/dev/null
-    return
-  fi
-  if command -v pkexec >/dev/null; then
-    printf '%s\n' "$content" | pkexec tee "$dest" >/dev/null
-    return
-  fi
-  echo "cannot write $dest (need sudo or pkexec)" >&2
-  return 1
 }
 
 save_state() {
@@ -262,16 +228,8 @@ set_charge() {
     "$PLUGIN_APPLY" charge "$pct"
     return
   fi
-  if [[ ! -e "$BAT_END" ]]; then
-    echo "no battery charge threshold at $BAT_END" >&2
-    return 1
-  fi
-  if [[ -r "$BAT_END" && $(cat "$BAT_END") == "$pct" ]]; then
-    echo "charge limit: ${pct}% (already set)"
-    return 0
-  fi
-  root_write "$BAT_END" "$pct"
-  echo "charge limit: $(cat "$BAT_END")%"
+  echo "missing $PLUGIN_APPLY" >&2
+  return 1
 }
 
 chromium_features_line() {
@@ -411,39 +369,6 @@ cmd_apply_saved() {
   esac
 }
 
-confirm() {
-  local prompt="$1"
-  if [[ ! -t 0 ]]; then
-    echo "refusing destructive action without a tty" >&2
-    return 1
-  fi
-  read -r -p "$prompt [y/N] " ans
-  [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]
-}
-
-cmd_cleanup_nvidia() {
-  echo "This laptop has Intel Arc only. nvidia-utils was pulled in by Steam."
-  echo "Dry-run:"
-  pacman -Rcs --print nvidia-utils lib32-nvidia-utils 2>/dev/null | head -40
-  echo
-  confirm "Remove nvidia-utils and lib32-nvidia-utils?" || return 1
-  if [[ -t 0 ]] && command -v sudo >/dev/null; then
-    sudo pacman -Rcs --noconfirm nvidia-utils lib32-nvidia-utils
-  else
-    pkexec pacman -Rcs --noconfirm nvidia-utils lib32-nvidia-utils
-  fi
-}
-
-cmd_cleanup_ollama_cuda() {
-  local d12="$HOME/.local/lib/ollama/cuda_v12"
-  local d13="$HOME/.local/lib/ollama/cuda_v13"
-  echo "These CUDA extra libs are unused without an NVIDIA GPU:"
-  du -sh "$d12" "$d13" 2>/dev/null || true
-  confirm "Delete cuda_v12 and cuda_v13?" || return 1
-  rm -rf --one-file-system -- "$d12" "$d13"
-  echo "kept $(ls -d "$HOME/.local/lib/ollama/vulkan" 2>/dev/null || echo vulkan-missing)"
-}
-
 main() {
   local args=()
   local want_help=0
@@ -493,13 +418,6 @@ main() {
     vaapi)
       [[ "${1:-}" =~ ^(on|off)$ ]] || { echo "vaapi: on|off" >&2; exit 2; }
       set_vaapi "$1"
-      ;;
-    cleanup)
-      case "${1:-}" in
-        nvidia) cmd_cleanup_nvidia ;;
-        ollama-cuda) cmd_cleanup_ollama_cuda ;;
-        *) echo "cleanup: nvidia|ollama-cuda" >&2; exit 2 ;;
-      esac
       ;;
     *)
       echo "unknown command: $cmd" >&2
